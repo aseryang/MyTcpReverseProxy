@@ -1,8 +1,7 @@
 package main
 
 import (
-	"MyTcpReverseProxy/utils/log"
-	"MyTcpReverseProxy/utils/net"
+	"github.com/aseryang/MyTcpReverseProxy/utils/net"
 	"fmt"
 	"testing"
 	"time"

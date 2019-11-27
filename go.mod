@@ -1,4 +1,4 @@
-module MyTcpReverseProxy
+module github.com/aseryang/MyTcpReverseProxy
 
 go 1.13
 

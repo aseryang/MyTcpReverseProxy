@@ -1,8 +1,8 @@
 package server
 
 import (
-	"MyTcpReverseProxy/models/msg"
-	"MyTcpReverseProxy/utils/log"
+	"github.com/aseryang/MyTcpReverseProxy/models/msg"
+	"github.com/aseryang/MyTcpReverseProxy/utils/log"
 	"github.com/hashicorp/yamux"
 	"net"
 )

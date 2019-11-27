@@ -23,7 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"MyTcpReverseProxy/utils/log"
+	"github.com/aseryang/MyTcpReverseProxy/utils/log"
 
 	gnet "github.com/fatedier/golib/net"
 	kcp "github.com/fatedier/kcp-go"

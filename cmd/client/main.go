@@ -1,7 +1,7 @@
 package main
 
-import "MyTcpReverseProxy/client"
-import "MyTcpReverseProxy/utils/log"
+import "github.com/aseryang/MyTcpReverseProxy/client"
+import "github.com/aseryang/MyTcpReverseProxy/utils/log"
 
 type LogConf struct {
 	LogFile    string

@@ -1,13 +1,13 @@
 package client
 
 import (
-	"MyTcpReverseProxy/utils/log"
+	"github.com/aseryang/MyTcpReverseProxy/utils/log"
 	fio "github.com/fatedier/golib/io"
 	"github.com/hashicorp/yamux"
 	"io"
 	"net"
 )
-import "MyTcpReverseProxy/models/msg"
+import "github.com/aseryang/MyTcpReverseProxy/models/msg"
 
 var sshLocalAddr = "127.0.0.1:22"
 
