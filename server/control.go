@@ -3,40 +3,55 @@ package server
 import (
 	"github.com/aseryang/MyTcpReverseProxy/models/msg"
 	"github.com/aseryang/MyTcpReverseProxy/utils/log"
-	"fmt"
-	"github.com/fatedier/frp/utils/version"
-	fio "github.com/fatedier/golib/io"
+	"github.com/aseryang/MyTcpReverseProxy/utils/version"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
 type Control struct {
+	svr           *Service
 	sendCh        chan msg.Message
 	readCh        chan msg.Message
+	heartbeatCh   chan msg.Message
 	conn          net.Conn
 	workConnCh    chan net.Conn
 	connPoolCount int
 	closeCh       chan struct{}
+	RunId         string
+	pm            *ProxyManager
+	vm            *VisitorManager
+	pxys          []string
+	listeners     []string
+	mtx           sync.Mutex
 }
 
-func NewControl() *Control {
+func NewControl(svr *Service, loginMsg *msg.Login, pm *ProxyManager, vm *VisitorManager) *Control {
 	var poolCount = 2
-	return &Control{sendCh: make(chan msg.Message, 10),
+	ctl := Control{svr: svr,
+		sendCh:        make(chan msg.Message, 10),
 		readCh:        make(chan msg.Message, 10),
+		heartbeatCh:   make(chan msg.Message, 10),
 		connPoolCount: poolCount,
-		workConnCh:    make(chan net.Conn, poolCount)}
+		closeCh:       make(chan struct{}),
+		workConnCh:    make(chan net.Conn, poolCount),
+		RunId:         loginMsg.RunId,
+		pm:            pm,
+		vm:            vm}
+	return &ctl
 }
 func (ctl *Control) Run() {
-	loginRespMsg := &msg.LoginResp{Version: version.Full()}
+	log.Info("Send LoginResp msg, RunId:%s", ctl.RunId)
+	loginRespMsg := &msg.LoginResp{Version: version.Full(), RunId: ctl.RunId}
 	msg.WriteMsg(ctl.conn, loginRespMsg)
 	go ctl.reader()
 	go ctl.writer()
 	for i := 0; i < ctl.connPoolCount; i++ {
 		ctl.sendCh <- &msg.ReqWorkConn{}
 	}
-
 	go ctl.msgHandle()
+	go ctl.heartBeat()
 	<-ctl.closeCh
 }
 func (ctl *Control) RegisterWorkConn(workConn net.Conn) {
@@ -95,46 +110,6 @@ func (ctl *Control) writer() {
 		}
 	}
 }
-
-func (ctl *Control) handleUserTcpConnection(userConn net.Conn) {
-	log.Info("New user connection...")
-	workConn, err := ctl.GetWorkConn()
-	if err != nil {
-		return
-	}
-	err = msg.WriteMsg(workConn, &msg.StartWorkConn{ProxyName: "ssh"})
-	if err != nil {
-		return
-	}
-	log.Info("Send StartWorkConn msg succeed.")
-	fio.Join(userConn, workConn)
-}
-
-func (ctl *Control) handleNewProxy(pxymsg msg.NewProxy) {
-	log.Info("NewProxy listen on port %d.", pxymsg.RemotePort)
-	go func() {
-		listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", "0.0.0.0", pxymsg.RemotePort))
-		if err != nil {
-			log.Info("Proxy Listen ret failed!")
-			return
-		}
-		for {
-			userConn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go ctl.handleUserTcpConnection(userConn)
-		}
-	}()
-	resp := &msg.NewProxyResp{
-		ProxyName: "ssh",
-	}
-	ctl.sendCh <- resp
-	log.Info("Send NewProxyResp msg succeed.")
-}
-func (ctl *Control) handleCloseProxy(m msg.Message) {
-
-}
 func (ctl *Control) msgHandle() {
 	for {
 		rawMsg, ok := <-ctl.readCh
@@ -144,10 +119,74 @@ func (ctl *Control) msgHandle() {
 		switch m := rawMsg.(type) {
 		case *msg.NewProxy:
 			log.Info("Received NewProxy msg.")
-			go ctl.handleNewProxy(*m)
+			go ctl.pm.RegisterProxy(*m, ctl)
 		case *msg.CloseProxy:
 			log.Info("Received CloseProxy msg.")
-			go ctl.handleCloseProxy(m)
+			go ctl.pm.StopProxy(*m)
+		case *msg.Pong:
+			log.Info("Received Pong msg.")
+			ctl.heartbeatCh <- m
+		}
+	}
+}
+func (ctl *Control) close() {
+	ctl.conn.Close()
+	close(ctl.sendCh)
+	close(ctl.readCh)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		for ; ; {
+			select {
+			case conn:=<-ctl.workConnCh:
+				log.Info("Close work connection.")
+				conn.Close()
+			default:
+				close(ctl.workConnCh)
+				wg.Done()
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	log.Info("WorkConn channel is closed.")
+	ctl.pm.StopProxies(ctl.pxys)
+	log.Info("Proxies stopped.")
+	ctl.vm.StopListeners(ctl.listeners)
+	log.Info("Visitor listeners stopped.")
+	close(ctl.closeCh)
+	log.Info("Control:%s is closed.", ctl.RunId)
+}
+func (ctl *Control) heartBeat() {
+	timeOutCount := 0
+	maxTimeOutCount := 3
+	go func() {
+		for ; ; {
+			select {
+			case <-ctl.heartbeatCh:
+				ctl.mtx.Lock()
+				timeOutCount = 0
+				ctl.mtx.Unlock()
+			case <-ctl.closeCh:
+				return
+			}
+		}
+	}()
+	for ; ; {
+		select {
+		case <-time.After(time.Second * 1):
+			if timeOutCount > maxTimeOutCount {
+				log.Info("Heartbeat reached max timeout times, close the control.")
+				ctl.close()
+				ctl.svr.UnRegisterControl(ctl.RunId)
+				return
+			}
+			ctl.sendCh <- &msg.Ping{}
+			ctl.mtx.Lock()
+			timeOutCount += 1
+			ctl.mtx.Unlock()
+		case <-ctl.closeCh:
+			return
 		}
 	}
 }
